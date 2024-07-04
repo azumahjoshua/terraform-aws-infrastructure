@@ -23,6 +23,8 @@ EXPOSE 3000 4000
 # CMD to start json-server and serve the main application
 CMD ["sh", "-c", "json-server api/db.json --port 4000 & serve -s build -l 3000"]
 # CMD ["sh", "-c", "npm run api & serve -s build -l 3000"]
+# CMD ["sh", "-c", "npm run api & npm start"]
+
 
 
 
