@@ -1,0 +1,105 @@
+pipeline {
+    agent any
+    tools {
+        jdk 'Amazon Corretto 17'
+        nodejs 'node22'
+    }
+    environment {
+        SCANNER_HOME = tool 'sonar-scanner'
+        SONARQUBE_SERVER_URL = 'http://34.209.66.91:9000'
+    }
+    stages {
+        stage('Clean Workspace') {
+            steps {
+                cleanWs()
+            }
+        }
+        stage('Checkout from Git') {
+            steps {
+                git branch: 'main', url: 'https://github.com/azumahjoshua/terraform-aws-infrastructure.git'
+            }
+        }
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('sonar-server') {
+                    sh '''
+                    $SCANNER_HOME/bin/sonar-scanner \
+                    -Dsonar.projectName=keeptrack \
+                    -Dsonar.projectKey=keeptrack \
+                    -Dsonar.host.url=$SONARQUBE_SERVER_URL
+                    '''
+                }
+            }
+        }
+        stage('Quality Gate') {
+            steps {
+                script {
+                    timeout(time: 60, unit: 'MINUTES') {
+                        waitForQualityGate abortPipeline: true, credentialsId: 'jenkins'
+                    }
+                }
+            }
+        }
+        stage('Install Dependencies') {
+            steps {
+                sh 'npm install'
+            }
+        }
+        stage('OWASP FS Scan') {
+            steps {
+                dependencyCheck additionalArguments: '--scan ./ --disableYarnAudit --disableNodeAudit', odcInstallation: 'DP-Check'
+                dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
+            }
+        }
+        stage('Trivy FS Scan') {
+            steps {
+                sh 'trivy fs . > trivyfs.txt'
+            }
+        }
+        stage('Cleanup Docker') {
+            steps {
+                script {
+                    // Stop and remove all running containers
+                    sh 'docker stop $(docker ps -aq) || true'
+                    sh 'docker rm $(docker ps -aq) || true'
+                    
+                    // Remove all images
+                    sh 'docker rmi -f $(docker images -q) || true'
+                    
+                    // Optionally, remove dangling images and volumes
+                    sh 'docker system prune -af || true'
+                    sh 'docker volume prune -f || true'
+                }
+            }
+        }
+        stage('Docker Build') {
+            steps {
+                script {
+                    sh 'docker build -t keeptrack-app .'
+                }
+            }
+        }
+        stage('Trivy Image Scan') {
+            steps {
+                sh 'trivy image keeptrack-app:latest > trivyimage.txt'
+            }
+        }
+        stage('Deploy to Container') {
+            steps {
+                sh 'docker run -d --name keeptrack-app -p 3000:3000 -p 4000:4000 keeptrack-app:latest'
+            }
+        }
+        stage('Check Service Status') {
+            steps {
+                script {
+                    def response = sh(script: "curl -s -o /dev/null -w '%{http_code}' http://localhost:3000", returnStdout: true).trim()
+                    echo "HTTP Response Code: ${response}"
+                    
+                    if (response != '200') {
+                        error "Service is not running properly, HTTP status code: ${response}"
+                    }
+                }
+            }
+        }
+    }
+}
